@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chess vs Stockfish</title>
+  <style>
+    :root {
+      --board-size: min(92vw, 480px);
+      --light: #f0d9b5;
+      --dark: #b58863;
+      --bg: #0f1115;
+      --panel: #1a1f29;
+      --panel2: #202635;
+      --text: #f5f7fb;
+      --accent: #4a8dff;
+      --mark: rgba(245, 51, 51, 0.5);
+      --arrow: rgba(235, 78, 52, 0.88);
+      --sq: 60px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 15% 10%, #1a2442 0%, var(--bg) 45%);
+      color: var(--text);
+      font-family: Inter, Segoe UI, Arial, sans-serif;
+      padding: 12px;
+    }
+
+    .app {
+      width: min(100%, 1100px);
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 14px;
+    }
+
+    .panel {
+      background: linear-gradient(160deg, var(--panel), var(--panel2));
+      border: 1px solid #32394b;
+      border-radius: 16px;
+      box-shadow: 0 14px 38px rgba(0,0,0,.38);
+    }
+
+    .left { padding: 12px; }
+    .right { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .title { font-size: 20px; font-weight: 700; }
+    .status { font-size: 14px; padding: 8px 10px; border: 1px solid #3e475f; border-radius: 10px; background: #141a27; }
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: white;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .14s ease, filter .14s ease;
+    }
+    button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    button.secondary { background: #4f5666; }
+
+    .slider-row { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+    input[type="range"] { width: 100%; }
+
+    #boardWrap {
+      width: var(--board-size);
+      height: var(--board-size);
+      margin: 8px auto;
+      position: relative;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 2px solid #283146;
+      box-shadow: 0 8px 18px rgba(0,0,0,.35) inset;
+      touch-action: none;
+    }
+
+    #board {
+      width: 100%;
+      height: 100%;
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      user-select: none;
+      touch-action: none;
+    }
+
+    #annotationLayer {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 4;
+    }
+
+    .square.light { background: var(--light); }
+    .square.dark { background: var(--dark); }
+
+    .piece {
+      position: absolute;
+      width: var(--sq);
+      height: var(--sq);
+      transition: transform 320ms cubic-bezier(.2,.7,.2,1);
+      cursor: grab;
+      z-index: 3;
+      will-change: transform;
+    }
+    .piece.dragging {
+      transition: none;
+      cursor: grabbing;
+      z-index: 8;
+      filter: drop-shadow(0 10px 8px rgba(0,0,0,.45));
+    }
+
+
+    .card { border: 1px solid #37405a; border-radius: 12px; padding: 10px; background: #161d2e; }
+    .card h3 { margin: 0 0 8px; font-size: 15px; opacity: .95; }
+    #moveList { max-height: 220px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+
+    .toast { position: fixed; top: 14px; left: 50%; transform: translate(-50%, -20px); opacity: 0; pointer-events: none; background: #1b2233; border: 1px solid #4f5a77; border-radius: 999px; padding: 8px 14px; font-size: 14px; transition: all .2s ease; z-index: 60; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    .popup { position: fixed; inset: 0; background: rgba(0,0,0,.62); display: none; place-items: center; z-index: 100; }
+    .popup.show { display: grid; }
+    .popup-card { min-width: min(92vw, 360px); background: #1a2132; border: 1px solid #4a5676; border-radius: 16px; padding: 20px; text-align: center; }
+    .popup-card h2 { margin: 0 0 8px; }
+    .popup-card p { margin: 0 0 14px; opacity: .9; }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      .right { order: 2; }
+    }
+  </style>
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+  <div id="checkmatePopup" class="popup" role="dialog" aria-modal="true">
+    <div class="popup-card">
+      <h2 id="popupTitle">Game Over</h2>
+      <p id="popupText"></p>
+      <button id="popupClose">Close</button>
+    </div>
+  </div>
+
+  <div class="app">
+    <section class="panel left">
+      <div class="topbar">
+        <div class="title">Play vs Stockfish</div>
+        <div id="status" class="status">Ready.</div>
+      </div>
+
+      <div class="controls">
+        <button id="startBtn">Start Game</button>
+        <button id="endBtn" class="secondary">End Game</button>
+      </div>
+
+      <div class="slider-row">
+        <input id="eloSlider" type="range" min="800" max="3000" step="20" value="1320" />
+        <span id="eloLabel">ELO: 1320</span>
+      </div>
+
+      <div id="boardWrap">
+        <div id="board" aria-label="chessboard"></div>
+        <svg id="annotationLayer" viewBox="0 0 480 480" preserveAspectRatio="none">
+          <defs>
+            <marker id="arrowHead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L6,3 L0,6 z" fill="var(--arrow)" />
+            </marker>
+          </defs>
+          <g id="marks"></g>
+          <g id="arrows"></g>
+        </svg>
+      </div>
+    </section>
+
+    <aside class="panel right">
+      <div class="card"><h3>Game events</h3><div id="events">Start a game to begin.</div></div>
+      <div class="card"><h3>Move list</h3><div id="moveList">No moves yet.</div></div>
+    </aside>
+  </div>
+
+  <script>
+    const boardWrap = document.getElementById("boardWrap");
+    const boardEl = document.getElementById("board");
+    const statusEl = document.getElementById("status");
+    const startBtn = document.getElementById("startBtn");
+    const endBtn = document.getElementById("endBtn");
+    const eloSlider = document.getElementById("eloSlider");
+    const eloLabel = document.getElementById("eloLabel");
+    const moveListEl = document.getElementById("moveList");
+    const eventsEl = document.getElementById("events");
+    const toastEl = document.getElementById("toast");
+    const checkmatePopup = document.getElementById("checkmatePopup");
+    const popupTitle = document.getElementById("popupTitle");
+    const popupText = document.getElementById("popupText");
+    const marksLayer = document.getElementById("marks");
+    const arrowsLayer = document.getElementById("arrows");
+
+    const files = "abcdefgh";
+
+    const sounds = {
+      move: new Audio("/static/assets/move-piece.mp3"),
+      capture: new Audio("/static/assets/capture.mp3"),
+      castle: new Audio("/static/assets/castle.mp3"),
+      check: new Audio("/static/assets/move-check.mp3"),
+      illegal: new Audio("/static/assets/illegal.mp3"),
+      gameStart: new Audio("/static/assets/game-start.mp3"),
+      gameEnd: new Audio("/static/assets/game-end.mp3"),
+      moveOpponent: new Audio("/static/assets/move-opponent.mp3")
+    };
+
+    const pieceMap = {
+      p: "black-pawn.png", r: "black-rook.png", n: "black-knight.png", b: "black-bishop.png", q: "black-queen.png", k: "black-king.png",
+      P: "white-pawn.png", R: "white-rook.png", N: "white-knight.png", B: "white-bishop.png", Q: "white-queen.png", K: "white-king.png"
+    };
+
+    let pieces = {};
+    let dragging = null;
+    let rightDrag = null;
+    const highlighted = new Set();
+    let arrows = [];
+
+    const sq = () => boardWrap.clientWidth / 8;
+    function syncSquareCssVar() { document.documentElement.style.setProperty('--sq', `${sq()}px`); }
+    window.addEventListener('resize', () => { syncSquareCssVar(); renderAnnotations(); refreshState(); });
+
+    function showToast(text) {
+      toastEl.textContent = text;
+      toastEl.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toastEl.classList.remove("show"), 1800);
+    }
+
+    function showPopup(title, text) { popupTitle.textContent = title; popupText.textContent = text; checkmatePopup.classList.add("show"); }
+    function hidePopup() { checkmatePopup.classList.remove("show"); }
+    document.getElementById("popupClose").addEventListener("click", hidePopup);
+
+    function buildGrid() {
+      boardEl.innerHTML = "";
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const sqEl = document.createElement("div");
+          sqEl.className = `square ${(r + c) % 2 ? "dark" : "light"}`;
+          boardEl.appendChild(sqEl);
+        }
+      }
+    }
+
+    function setPiecePosition(el, row, col) {
+      const s = sq();
+      el.style.transform = `translate(${col * s}px, ${row * s}px)`;
+      el.dataset.row = row;
+      el.dataset.col = col;
+    }
+
+    function parseFenBoard(fenBoard) {
+      const out = [];
+      const rows = fenBoard.split("/");
+      rows.forEach((row, r) => {
+        let c = 0;
+        for (const ch of row) {
+          if (/\d/.test(ch)) c += Number(ch);
+          else { out.push({ symbol: ch, row: r, col: c }); c += 1; }
+        }
+      });
+      return out;
+    }
+
+    function squareToUci(row, col) { return files[col] + String(8 - row); }
+    function uciToSquare(uci) { return { row: 8 - Number(uci[1]), col: uci.charCodeAt(0) - 97 }; }
+
+    function playMoveSound(meta, isAi = false) {
+      if (meta?.game_over) return sounds.gameEnd.play().catch(() => {});
+      if (meta?.check) return sounds.check.play().catch(() => {});
+      if (meta?.castle) return sounds.castle.play().catch(() => {});
+      if (meta?.capture) return sounds.capture.play().catch(() => {});
+      return (isAi ? sounds.moveOpponent : sounds.move).play().catch(() => {});
+    }
+
+    function renderMoveList(moveList = []) {
+      if (!moveList.length) return moveListEl.textContent = "No moves yet.";
+      let text = "";
+      for (let i = 0; i < moveList.length; i += 2) {
+        const turn = Math.floor(i / 2) + 1;
+        text += `${turn}. ${moveList[i] || ""}   ${moveList[i + 1] || ""}\n`;
+      }
+      moveListEl.textContent = text.trimEnd();
+      moveListEl.scrollTop = moveListEl.scrollHeight;
+    }
+
+    function updateStatus(data) {
+      if (data.is_checkmate) statusEl.textContent = `CHECKMATE • ${data.result}`;
+      else if (data.is_stalemate) statusEl.textContent = `Stalemate • ${data.result}`;
+      else if (data.is_check) statusEl.textContent = `${data.turn} to move • CHECK`;
+      else statusEl.textContent = `${data.turn} to move`;
+    }
+
+    function renderFen(fen) {
+      const boardPart = fen.split(" ")[0];
+      Object.values(pieces).forEach(el => el.remove());
+      pieces = {};
+      parseFenBoard(boardPart).forEach(({symbol, row, col}) => {
+        const img = document.createElement("img");
+        img.className = "piece";
+        img.src = `/static/assets/${pieceMap[symbol]}`;
+        setPiecePosition(img, row, col);
+        img.addEventListener("pointerdown", (e) => onPointerDown(e, img, symbol));
+        boardEl.appendChild(img);
+        pieces[`${row},${col}`] = img;
+      });
+    }
+
+    function handleGameOver(state) {
+      if (!state.is_game_over) return;
+      if (state.is_checkmate) {
+        showPopup("Checkmate", `Game over: ${state.result}`);
+        showToast("Checkmate!");
+      } else {
+        showPopup("Game Over", `Result: ${state.result}`);
+      }
+    }
+
+    function applyState(state) {
+      renderFen(state.fen);
+      renderMoveList(state.move_list);
+      updateStatus(state);
+      eloSlider.value = state.elo;
+      eloLabel.textContent = `ELO: ${state.elo}`;
+      handleGameOver(state);
+    }
+
+    async function refreshState() {
+      const res = await fetch("/state");
+      const state = await res.json();
+      applyState(state);
+      return state;
+    }
+
+    function clearAnnotations() {
+      highlighted.clear();
+      arrows = [];
+      renderAnnotations();
+    }
+
+    function renderAnnotations() {
+      marksLayer.innerHTML = "";
+      arrowsLayer.innerHTML = "";
+      const s = sq();
+      highlighted.forEach((key) => {
+        const [r, c] = key.split(",").map(Number);
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", c * s);
+        rect.setAttribute("y", r * s);
+        rect.setAttribute("width", s);
+        rect.setAttribute("height", s);
+        rect.setAttribute("fill", "var(--mark)");
+        marksLayer.appendChild(rect);
+      });
+
+      arrows.forEach((a) => {
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", a.from.col * s + s / 2);
+        line.setAttribute("y1", a.from.row * s + s / 2);
+        line.setAttribute("x2", a.to.col * s + s / 2);
+        line.setAttribute("y2", a.to.row * s + s / 2);
+        line.setAttribute("stroke", "var(--arrow)");
+        line.setAttribute("stroke-width", Math.max(7, s * 0.16));
+        line.setAttribute("stroke-linecap", "round");
+        line.setAttribute("marker-end", "url(#arrowHead)");
+        arrowsLayer.appendChild(line);
+      });
+    }
+
+    function getSquareFromPoint(clientX, clientY) {
+      const rect = boardWrap.getBoundingClientRect();
+      const c = Math.floor((clientX - rect.left) / (rect.width / 8));
+      const r = Math.floor((clientY - rect.top) / (rect.height / 8));
+      if (c < 0 || c > 7 || r < 0 || r > 7) return null;
+      return { row: r, col: c };
+    }
+
+    boardWrap.addEventListener("contextmenu", (e) => e.preventDefault());
+    boardWrap.addEventListener("pointerdown", (e) => {
+      if (e.button !== 2) return;
+      e.preventDefault();
+      const sqr = getSquareFromPoint(e.clientX, e.clientY);
+      if (!sqr) return;
+      rightDrag = { start: sqr, moved: false };
+    });
+
+    boardWrap.addEventListener("pointermove", (e) => {
+      if (!rightDrag) return;
+      if ((e.buttons & 2) !== 2) return;
+      const sqr = getSquareFromPoint(e.clientX, e.clientY);
+      if (!sqr) return;
+      if (sqr.row !== rightDrag.start.row || sqr.col !== rightDrag.start.col) rightDrag.moved = true;
+    });
+
+    boardWrap.addEventListener("pointerup", (e) => {
+      if (e.button !== 2 || !rightDrag) return;
+      e.preventDefault();
+      const end = getSquareFromPoint(e.clientX, e.clientY);
+      if (!end) { rightDrag = null; return; }
+
+      if (!rightDrag.moved || (end.row === rightDrag.start.row && end.col === rightDrag.start.col)) {
+        const key = `${end.row},${end.col}`;
+        if (highlighted.has(key)) highlighted.delete(key); else highlighted.add(key);
+      } else {
+        const exists = arrows.findIndex((a) =>
+          a.from.row === rightDrag.start.row && a.from.col === rightDrag.start.col && a.to.row === end.row && a.to.col === end.col
+        );
+        if (exists >= 0) arrows.splice(exists, 1);
+        else arrows.push({ from: rightDrag.start, to: end });
+      }
+      renderAnnotations();
+      rightDrag = null;
+    });
+
+    async function animateUciMove(move, capture = false) {
+      const from = uciToSquare(move.slice(0, 2));
+      const to = uciToSquare(move.slice(2, 4));
+      const moving = pieces[`${from.row},${from.col}`];
+      if (!moving) return;
+
+      if (capture) {
+        const target = pieces[`${to.row},${to.col}`];
+        if (target && target !== moving) target.remove();
+      }
+
+      setPiecePosition(moving, to.row, to.col);
+      await new Promise((resolve) => setTimeout(resolve, 340));
+    }
+
+    function onPointerDown(e, img, symbol) {
+      if (e.button !== 0) return;
+      if (symbol === symbol.toLowerCase()) return;
+      if (statusEl.textContent.includes("CHECKMATE")) return;
+
+      e.preventDefault();
+      const rect = boardWrap.getBoundingClientRect();
+      const s = sq();
+      const row = Number(img.dataset.row);
+      const col = Number(img.dataset.col);
+
+      img.classList.add("dragging");
+      dragging = {
+        img,
+        fromRow: row,
+        fromCol: col,
+        offsetX: e.clientX - rect.left - (col * s + s / 2),
+        offsetY: e.clientY - rect.top - (row * s + s / 2)
+      };
+
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", onPointerUp, { once: true });
+    }
+
+    function onPointerMove(e) {
+      if (!dragging) return;
+      const rect = boardWrap.getBoundingClientRect();
+      const s = sq();
+      const x = e.clientX - rect.left - dragging.offsetX;
+      const y = e.clientY - rect.top - dragging.offsetY;
+      dragging.img.style.transform = `translate(${x - s / 2}px, ${y - s / 2}px)`;
+    }
+
+    async function onPointerUp(e) {
+      document.removeEventListener("pointermove", onPointerMove);
+      if (!dragging) return;
+
+      const d = dragging;
+      dragging = null;
+      d.img.classList.remove("dragging");
+  
+      const rect = boardWrap.getBoundingClientRect();
+      const s = sq();
+      const dropCol = Math.floor((e.clientX - rect.left) / s);
+      const dropRow = Math.floor((e.clientY - rect.top) / s);
+
+      if (dropCol < 0 || dropCol > 7 || dropRow < 0 || dropRow > 7) {
+        setPiecePosition(d.img, d.fromRow, d.fromCol);
+        sounds.illegal.play().catch(()=>{});
+        return;
+      }
+
+      const move = squareToUci(d.fromRow, d.fromCol) + squareToUci(dropRow, dropCol);
+      const moveRes = await fetch("/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ move })
+      });
+      const moveData = await moveRes.json();
+
+      if (moveData.status !== "legal") {
+        setPiecePosition(d.img, d.fromRow, d.fromCol);
+        sounds.illegal.play().catch(()=>{});
+        eventsEl.textContent = "Illegal move.";
+        return;
+      }
+
+      clearAnnotations();
+      await animateUciMove(move, moveData.capture);
+      playMoveSound(moveData, false);
+      applyState(moveData);
+      eventsEl.textContent = `You played ${move}.`;
+
+      if (!moveData.game_over) await playAi();
+    }
+
+    async function playAi() {
+      const aiRes = await fetch("/ai");
+      const aiData = await aiRes.json();
+      if (aiData.status === "ok") {
+        clearAnnotations();
+        await animateUciMove(aiData.move, aiData.capture);
+        playMoveSound(aiData, true);
+        applyState(aiData);
+        eventsEl.textContent = `Stockfish played ${aiData.move}.`;
+      }
+    }
+
+    async function setElo(elo) {
+      const res = await fetch("/set_elo", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ elo })
+      });
+      const data = await res.json();
+      if (data.ok) { eloLabel.textContent = `ELO: ${data.elo}`; showToast(`ELO set to ${data.elo}`); }
+      else showToast(data.message || "Could not set ELO");
+    }
+
+    eloSlider.addEventListener("input", () => eloLabel.textContent = `ELO: ${eloSlider.value}`);
+    eloSlider.addEventListener("change", async () => setElo(Number(eloSlider.value)));
+
+    startBtn.addEventListener("click", async () => {
+      hidePopup();
+      const res = await fetch("/start");
+      const data = await res.json();
+      sounds.gameStart.play().catch(()=>{});
+      clearAnnotations();
+      applyState(data);
+      eventsEl.textContent = "Game started. You are White.";
+      showToast("Game started");
+    });
+
+    endBtn.addEventListener("click", async () => {
+      hidePopup();
+      const res = await fetch("/end");
+      const data = await res.json();
+      sounds.gameEnd.play().catch(()=>{});
+      clearAnnotations();
+      applyState(data);
+      eventsEl.textContent = "Game ended and board reset.";
+      showToast("Game ended");
+    });
+
+    syncSquareCssVar();
+    buildGrid();
+    refreshState();
+  </script>
+</body>
+</html>
